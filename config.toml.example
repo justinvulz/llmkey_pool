@@ -1,0 +1,17 @@
+# config.toml
+[server]
+host = "0.0.0.0"
+port = 3030
+
+[proxy]
+# Optional: Set a key for the proxy server itself.
+# If this line is commented out or set to an empty string, authentication is skipped.
+proxy_api_key = ""
+
+# List of Gemini API keys. The proxy will balance requests across these keys.
+# Each string in the array is a single Gemini API key.
+gemini_api_keys = [
+    "YOUR_API_KEY_1"
+    "YOUR_API_KEY_2"
+    "YOUR_API_KEY_3"
+]
