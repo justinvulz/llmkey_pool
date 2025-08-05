@@ -1,0 +1,17 @@
+services:
+  llm_proxy:
+    build: . # Tells Docker Compose to build the image from the Dockerfile in the current directory
+    container_name: llm_proxy_server # Assigns a memorable name to your container
+    ports:
+      - "3030:3030" # Host_Port:Container_Port - Maps port 3030 on your host to port 3030 in the container
+    volumes:
+      # Mounts the local config.toml file into the container at /app/config.toml.
+      # This allows you to change config.toml on the host without rebuilding the Docker image.
+      - "./config.toml:/app/config.toml"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3030/healthz || exit 1"] # Command to check health
+      interval: 30s # How often to run the check
+      timeout: 10s # How long to wait for the command to complete
+      retries: 3 # How many times to retry before marking as unhealthy
+      start_period: 20s # Give the application some time to start up before starting health checks

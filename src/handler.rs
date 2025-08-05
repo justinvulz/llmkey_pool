@@ -61,7 +61,7 @@ pub async fn proxy_handler(
     let target_url = uri::Builder::new()
         .scheme("https")
         .authority("generativelanguage.googleapis.com")
-        .path_and_query(format!("/v1beta/openai{}{}",path, query))
+        .path_and_query(format!("/v1beta{}{}",path, query))
         .build()
         .map_err(|e| ProxyError::Internal(format!("URL build fail: {}", e)))?;
 
