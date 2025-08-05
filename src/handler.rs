@@ -17,7 +17,7 @@ use crate::key::KeyPool;
 pub struct AppState {
     pub apikeys: Arc<Mutex<KeyPool>>,    
     pub http_client: Arc<Client>,
-    pub proxy_api_key: Option<String>
+    pub proxy_api_key: String
 }
 
 
@@ -41,9 +41,9 @@ impl IntoResponse for ProxyError {
 }
 
 pub async fn proxy_handler(
-    State(state): State<AppState>, // 注入應用程式狀態
+    State(state): State<AppState>, 
     method: Method,
-    uri: Uri, // 使用 Uri 獲取完整的路徑和查詢參數
+    uri: Uri, 
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ProxyError> {
@@ -57,11 +57,15 @@ pub async fn proxy_handler(
 
     let path = uri.path();
     let query = uri.query().unwrap_or("");
-    //https://generativelanguage.googleapis.com/v1beta/openai/
+    let path_query = match query {
+        "" => path.to_string(),
+        _  => format!("{}&{}",path,query)
+    };
+
     let target_url = uri::Builder::new()
         .scheme("https")
         .authority("generativelanguage.googleapis.com")
-        .path_and_query(format!("/v1beta{}{}",path, query))
+        .path_and_query(format!("/v1beta{}",path_query))
         .build()
         .map_err(|e| ProxyError::Internal(format!("URL build fail: {}", e)))?;
 
@@ -69,44 +73,45 @@ pub async fn proxy_handler(
 
     let mut request_builder = state.http_client.request(method.clone(), target_url.to_string());
 
-    // 複製所有原始請求頭，但排除幾個由 reqwest 或 HTTP 協議本身處理的頭
-    // 並排除我們自己的認證頭 (Authorization)
     for (name, value) in headers.iter() {
         let header_name = name.as_str();
-        if !["host", "content-length", "accept-encoding", "connection", "user-agent", "authorization"]
+        if !["host", "content-length", "accept-encoding", "connection", "user-agent", "authorization", "x-goog-api-key"]
             .contains(&header_name.to_lowercase().as_str())
         {
             request_builder = request_builder.header(name, value);
         }
     }
-    request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
 
-    // 如果有請求體，則添加
+    request_builder = if path.starts_with("/openai") {
+        request_builder.header("Authorization", format!("Bearer {}", api_key))
+    } else {
+        request_builder.header("x-goog-api-key", format!("{}", api_key))
+    };
+
+    
     if !body.is_empty() {
         request_builder = request_builder.body(body);
     }
 
-    info!(
-            "Proxying request: {} {} to {}",
-            method, uri, target_url
-        );
-    // 發送請求並獲取響應
-    let upstream_response = request_builder.send().await.map_err(|e| {
+
+    info!("Proxying request: {} {} to {}", method, uri, target_url);
+
+    let (client,request) = request_builder.build_split();
+    let request = request.map_err(|e| ProxyError::Upstream(format!("Failed to send request to Gemini API: {}", e)))?;
+
+
+    let upstream_response = client.execute(request).await.map_err(|e| {
         ProxyError::Upstream(format!("Failed to send request to Gemini API: {}", e))
     })?;
 
-    // 構建要發送回客戶端的響應
     let mut response_builder = Response::builder().status(upstream_response.status());
 
-    // 複製上游響應的所有頭
     for (name, value) in upstream_response.headers().iter() {
         response_builder = response_builder.header(name, value);
     }
 
-    // 將上游響應的字節流直接轉發給下游客戶端
     let response_body = Body::from_stream(upstream_response.bytes_stream());
 
-    // 構建最終響應
     let response = response_builder.body(response_body).map_err(|e| {
         ProxyError::Internal(format!("Failed to build response: {}", e))
     })?;
@@ -121,37 +126,32 @@ pub async fn auth_middleware(
     next: axum::middleware::Next,
 ) -> Result<Response, ProxyError> {
 
-    if let Some(expected_key) = &state.proxy_api_key {
+    let auth_header = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
 
-        let auth_header = headers
-            .get(http::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok());
-
-        let provided_token = match auth_header {
-            Some(header_value) => {
-                if let Some(token_str) = header_value.strip_prefix("Bearer ").map(|s| s.trim()) {
-                    Some(token_str)
-                } else {
-                    None 
-                }
+    let provided_token = match auth_header {
+        Some(header_value) => {
+            if let Some(token_str) = header_value.strip_prefix("Bearer ").map(|s| s.trim()) {
+                Some(token_str)
+            } else {
+                None 
             }
-            None => None,
-        };
+        }
+        None => headers.get("x-goog-api-key").and_then(|value| value.to_str().ok()),
+    };
 
-        match provided_token {
-            Some(token) if token == expected_key => {
-                Ok(next.run(request).await)
-            }
-            _ => {
-                error!("Auth error");
-                Err(ProxyError::Unauthorized(
-                    "Invalid or missing 'Authorization: Bearer <TOKEN>' header".to_string(),
-                ))
+    match provided_token {
+        Some(token) if token == state.proxy_api_key => {
+            Ok(next.run(request).await)
+        }
+        _ => {
+            error!("Auth error");
+            Err(ProxyError::Unauthorized(
+                "Invalid or missing 'Authorization: Bearer <TOKEN>' header".to_string(),
+            ))
         },
 
-        }
-    } else {
-        Ok(next.run(request).await)
     }
 }
 

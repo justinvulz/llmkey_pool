@@ -25,7 +25,7 @@ fn default_port() -> u16 {
 #[derive(Deserialize, Debug)]
 pub struct ProxyConfig {
     #[serde(default)]
-    pub proxy_api_key: Option<String>,
+    pub proxy_api_key: String,
     pub gemini_api_keys: Vec<String>,
 }
 
